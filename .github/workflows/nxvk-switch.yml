@@ -1,0 +1,68 @@
+# Builds the NXVK (NVK for Nintendo Switch) driver package on GitHub's runners,
+# inside the project's own toolchain image, and publishes it as an artifact.
+#
+# Drop this file at .github/workflows/nxvk-switch.yml in a fork of
+# PalindromicBreadLoaf/nxvk (branch `switch`), enable Actions on the fork, then
+# run it from the Actions tab ("Run workflow"). The artifact `nxvk-switch-pkg`
+# unpacks to lib/ (libnvk.a, libnvk_support.a), include/ (Vulkan headers) and
+# smoke/ (the author's test NROs, e.g. nvk_vi_swapchain.nro).
+name: NXVK Switch package
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - .github/workflows/nxvk-switch.yml
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Free runner disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Build the toolchain image
+        run: docker build -t nxvk switch/docker
+
+      - name: Build the driver and stage the package (inside the image)
+        # CONTAINER= makes the Makefile run every step natively, and here
+        # "natively" is inside the toolchain image, where devkitPro lives.
+        run: |
+          docker run --rm -v "$PWD:/work" -w /work nxvk \
+            bash -lc 'make CONTAINER= -j"$(nproc)"'
+          ls -la switch/build/pkg/lib
+
+      - name: Link the smoke NROs
+        run: |
+          docker run --rm -v "$PWD:/work" -w /work nxvk \
+            bash -lc 'for app in nvk_smoke nvk_tri nvk_vi_swapchain; do make CONTAINER= nro APP=$app || exit 1; done'
+          ls -la switch/smoke/out || true
+
+      - name: Assemble the artifact
+        run: |
+          mkdir -p artifact/lib artifact/include artifact/smoke
+          cp switch/build/pkg/lib/*.a artifact/lib/
+          cp -r switch/build/pkg/lib/pkgconfig artifact/lib/ 2>/dev/null || true
+          if [ -d switch/build/pkg/include ]; then cp -r switch/build/pkg/include/. artifact/include/; fi
+          cp -r include/. artifact/include/
+          cp switch/smoke/out/*.nro artifact/smoke/ 2>/dev/null || true
+          cp VERSION artifact/VERSION
+          git rev-parse HEAD > artifact/COMMIT
+          du -sh artifact/lib artifact/include
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: nxvk-switch-pkg
+          path: artifact/
+          retention-days: 14
+          if-no-files-found: error
