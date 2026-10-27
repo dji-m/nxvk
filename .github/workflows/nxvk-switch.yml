@@ -4,8 +4,9 @@
 # Drop this file at .github/workflows/nxvk-switch.yml in a fork of
 # PalindromicBreadLoaf/nxvk (branch `switch`), enable Actions on the fork, then
 # run it from the Actions tab ("Run workflow"). The artifact `nxvk-switch-pkg`
-# unpacks to lib/ (libnvk.a, libnvk_support.a), include/ (Vulkan headers) and
-# smoke/ (the author's test NROs, e.g. nvk_vi_swapchain.nro).
+# unpacks to lib/ (libnvk.a, libnvk_support.a), include/ (Vulkan headers) and,
+# when their link succeeds, smoke/ (the author's test NROs); smoke-build.log
+# keeps that step's output either way.
 name: NXVK Switch package
 
 on:
@@ -41,11 +42,13 @@ jobs:
             bash -lc 'make CONTAINER= -j"$(nproc)"'
           ls -la switch/build/pkg/lib
 
-      - name: Link the smoke NROs
+      - name: Link the smoke NROs (best effort)
+        continue-on-error: true
         run: |
+          set -o pipefail
           docker run --rm -v "$PWD:/work" -w /work nxvk \
-            bash -lc 'for app in nvk_smoke nvk_tri nvk_vi_swapchain; do make CONTAINER= nro APP=$app || exit 1; done'
-          ls -la switch/smoke/out || true
+            bash -lc 'set -x; for app in nvk_smoke nvk_tri nvk_vi_swapchain; do make CONTAINER= nro APP=$app || echo "SMOKE FAILED: $app"; done' 2>&1 | tee smoke-build.log
+          ls -la switch/smoke/out 2>&1 | tee -a smoke-build.log || true
 
       - name: Assemble the artifact
         run: |
@@ -55,6 +58,7 @@ jobs:
           if [ -d switch/build/pkg/include ]; then cp -r switch/build/pkg/include/. artifact/include/; fi
           cp -r include/. artifact/include/
           cp switch/smoke/out/*.nro artifact/smoke/ 2>/dev/null || true
+          cp smoke-build.log artifact/ 2>/dev/null || true
           cp VERSION artifact/VERSION
           git rev-parse HEAD > artifact/COMMIT
           du -sh artifact/lib artifact/include
